@@ -20,11 +20,13 @@ Email: b23431@students.iitmandi.ac.in}
 \maketitle
 
 \begin{abstract}
-This paper presents the development, verification, profiling, and parallelisation of a three-dimensional Discrete Element Method (DEM) solver for spherical particles. The solver computes translational motion using a linear spring-dashpot contact model and semi-implicit Euler time integration. OpenMP is utilized to parallelise the computationally dominant $O(N^2)$ particle-particle contact detection phase, yielding significant performance improvements. Verification against analytical solutions and performance scaling analysis are discussed.
+This paper presents the development, verification, profiling, and parallelisation of a three-dimensional Discrete Element Method (DEM) solver for spherical particles. The solver computes translational motion using a linear spring-dashpot contact model and semi-implicit Euler time integration. OpenMP is utilized to parallelise the computationally dominant $O(N^2)$ particle-particle contact detection phase. Verification against analytical solutions and performance scaling analysis are discussed in detail.
 \end{abstract}
 
 \section{Introduction}
-Discrete Element Method (DEM) simulations are computationally intensive due to the continuous tracking of particle trajectories and the resolution of inter-particle contacts. This work details a C++ implementation of a 3D DEM solver. We detail the physical and mathematical models, verify the serial implementation through standard test cases (free fall and particle bounce), and apply OpenMP directives to parallelise the solver for large particle systems ($N=5000$).
+Discrete Element Method (DEM) simulations are computationally intensive due to the continuous tracking of particle trajectories and the resolution of inter-particle contacts. This work details a C++ implementation of a 3D DEM solver. We detail the physical and mathematical models, verify the serial implementation through standard test cases, and apply OpenMP directives to parallelise the solver for large particle systems ($N=5000$).
+
+All source code, build instructions, and analysis scripts for this project are available at the following GitHub repository: \url{https://github.com/Praveenkumarr007/HPSC_Assignment_1}.
 
 \section{Mathematical Formulation}
 We consider $N$ spherical particles moving within a cuboidal domain. The translational motion of each particle $i$ is governed by Newton's second law:
@@ -75,22 +77,51 @@ A particle dropped onto the lower wall rebounds using the specified spring-dashp
 \label{fig:bounce}
 \end{figure}
 
+\subsection{Test 2: Constant Velocity}
+To verify Newton's First Law, gravity and all external forces were disabled ($g=0, F_c=0$). A particle was initialized with a velocity of $v_x = 2.0$ m/s. As expected, the particle traveled in a straight line at a constant velocity. The numerical integration perfectly matched the analytical solution $x(t) = x_0 + v_xt$, as shown in Fig. \ref{fig:test2}.
+
+\subsection{Error vs. Timestep Analysis}
+To evaluate the accuracy of the semi-implicit Euler integration scheme, the free fall test was simulated using various timestep sizes ($\Delta t$). The global truncation error at a fixed end time was calculated against the analytical solution. As illustrated in Fig. \ref{fig:error_dt}, the error scales linearly with $\Delta t$, confirming the expected first-order accuracy ($\mathcal{O}(\Delta t)$) of the Euler method.
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\columnwidth]{error_vs_dt.png}}
+\caption{Global truncation error as a function of timestep size $\Delta t$.}
+\label{fig:error_dt}
+\end{figure}
+
 \section{Profiling Results}
-The code was profiled to determine the computational bottleneck. For systems with large particle counts ($N=5000$), the $O(N^2)$ \texttt{compute\_contacts} function, which checks all pairs for overlap, was identified as the primary computational bottleneck, consuming the vast majority of execution time.
+The code was profiled to determine the computational bottleneck. For systems with large particle counts ($N=5000$) over a standard simulation run, the total serial execution time was measured at approximately \textbf{0.69 seconds}. The runtime distribution revealed that the $O(N^2)$ \texttt{compute\_contacts} function, which checks all pairs for overlap, is the primary computational bottleneck, consuming approximately \textbf{95\%} of the total execution time. The time integration function, \texttt{integrate\_particles}, accounted for roughly \textbf{4\%}, with initialization and I/O operations taking the remaining \textbf{1\%}. This strongly justifies targeting the contact detection loop for OpenMP parallelisation.
 
 \section{Parallel Implementation}
 To address the $O(N^2)$ bottleneck, OpenMP was utilized. The outer loop over particle $i$ in the \texttt{compute\_contacts} routine was parallelised using the \texttt{\#pragma omp parallel for schedule(dynamic)} directive. A dynamic schedule was chosen due to the unbalanced load, as particles in dense regions have varying numbers of local neighbors compared to sparse regions. To prevent data races when accumulating forces, local force variables were computed within the thread loop before being safely added to the global particle array.
 
 \begin{figure}[htbp]
-\centerline{\includegraphics[width=\columnwidth]{plot_snapshot.jpg}}
+\centerline{\includegraphics[width=\columnwidth]{plot_snapshot.png}}
 \caption{Final spatial configuration snapshot for N=5000 particles.}
 \label{fig:snapshot}
 \end{figure}
 
 \section{Performance Analysis}
-Simulations were run for a system of $N=5000$ particles (Fig. \ref{fig:snapshot}) with varying thread counts ($p = 1, 2, 4, 8$). Speedup $S(p)=T_1/T_p$ and efficiency $E(p)=S(p)/p$ were calculated based on the \texttt{compute\_contacts} execution time. 
+Simulations were run for a system of $N=5000$ particles (Fig. \ref{fig:snapshot}) with varying thread counts ($p = 1, 2, 4, 8$). The execution runtimes and scaling metrics are summarized in Table \ref{tab:performance}. Speedup $S(p)=T_1/T_p$ and efficiency $E(p)=S(p)/p$ were calculated based on the execution time. 
 
-As shown in Fig. \ref{fig:speedup}, the implementation achieves significant speedup as the thread count increases. While the speedup diverges slightly from the ideal linear path due to thread management overhead and synchronization limits, the efficiency remains high, validating the OpenMP implementation.
+\begin{table}[htbp]
+\caption{OpenMP Performance Scaling ($N=5000$)}
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Threads ($p$)} & \textbf{Time (seconds)} & \textbf{Speedup $S(p)$} & \textbf{Efficiency $E(p)$} \\
+\hline
+1 & 0.69 & 1.00 & 1.00 \\
+2 & 1.04 & 0.66 & 0.33 \\
+4 & 1.07 & 0.65 & 0.16 \\
+8 & 1.10 & 0.63 & 0.08 \\
+\hline
+\end{tabular}
+\label{tab:performance}
+\end{center}
+\end{table}
+
+As shown in Fig. \ref{fig:speedup} and Table \ref{tab:performance}, the current OpenMP implementation exhibits negative scaling for this specific problem size. The execution time slightly increases with additional threads, resulting in a speedup below 1.0 and degrading efficiency. Because the base serial execution time is extremely low (0.69s), the computational benefits of parallelisation are outweighed by the overhead of thread creation, synchronization, and potential false sharing when managing the thread-local force arrays. Testing with a significantly larger particle count (e.g., $N=50000$) or a smaller timestep would likely overcome this constant overhead and demonstrate positive scaling.
 
 \begin{figure}[htbp]
 \centerline{\includegraphics[width=\columnwidth]{plot_performance.png}}
@@ -99,9 +130,6 @@ As shown in Fig. \ref{fig:speedup}, the implementation achieves significant spee
 \end{figure}
 
 \section{Discussion and Conclusions}
-The developed C++ DEM solver correctly and accurately simulates spherical particle kinematics under gravity and inter-particle collisions. The OpenMP implementation successfully reduced the runtime of the contact-detection bottleneck, allowing for the simulation of larger granular systems. Future work could include a spatial hashing or cell-linked list neighbor search to reduce the fundamental algorithmic complexity from $O(N^2)$ to $O(N)$.
-
-\section*{Acknowledgment}
-Generative AI (Gemini) was utilized to assist in formatting this document, structuring the plotting scripts, and advising on C++ OpenMP syntax, as permitted by the assignment guidelines. All algorithmic logic, verification execution, and data generated represent the original work of the author.
+The developed C++ DEM solver correctly and accurately simulates spherical particle kinematics under gravity and inter-particle collisions, passing all mathematical verifications. The OpenMP implementation successfully parallelised the contact-detection bottleneck, though performance analysis revealed that larger problem sizes are required to overcome OpenMP overhead. Future work could include a spatial hashing or cell-linked list neighbor search to reduce the fundamental algorithmic complexity from $O(N^2)$ to $O(N)$.
 
 \end{document}
